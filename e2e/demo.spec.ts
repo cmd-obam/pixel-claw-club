@@ -1,0 +1,31 @@
+import { expect, test } from "@playwright/test";
+
+test("demo member records a visit without seeing another member's money", async ({ page, request }) => {
+  const reset = await request.post("/api/demo/reset");
+  expect(reset.ok()).toBeTruthy();
+  await page.goto("/auth");
+  await expect(page.getByText("데모 계정")).toBeVisible();
+  await page.getByRole("button", { name: /멤버 A/ }).click();
+  await expect(page.getByText("데모 모드입니다")).toBeVisible();
+  await page.goto("/stores/new");
+  await page.getByPlaceholder("매장 이름").fill("테스트오락실");
+  await page.getByPlaceholder("주소").fill("서울시 중구");
+  await page.getByRole("button", { name: "저장" }).click();
+  await expect(page.getByRole("heading", { name: "테스트오락실" })).toBeVisible();
+  await page.getByRole("link", { name: "이 매장 기록하기" }).click();
+  await page.getByLabel("이번 판에 쓴 금액 (원)").fill("1500");
+  await page.getByRole("button", { name: "기록 저장" }).click();
+  await expect(page.getByText("1,500원")).toBeVisible();
+  await page.goto("/budget");
+  await expect(page.getByText("1,500원").first()).toBeVisible();
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "로그아웃" }).click();
+  await page.getByRole("button", { name: /멤버 B/ }).click();
+  await expect(page.getByText("데모 모드입니다")).toBeVisible();
+  await page.goto("/records");
+  await expect(page.getByText("테스트오락실")).toBeVisible();
+  await expect(page.getByText("비공개")).toBeVisible();
+  await expect(page.getByText("1,500원")).toHaveCount(0);
+  await page.goto("/budget");
+  await expect(page.getByText("1,500원")).toHaveCount(0);
+});
