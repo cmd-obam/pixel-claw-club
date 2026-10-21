@@ -98,6 +98,7 @@ export function MapPreview() {
   const [mapReady, setMapReady] = useState(false);
   const [cardNote, setCardNote] = useState<string | null>(null);
   const mapNode = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLElement>(null);
   const mapRef = useRef<NaverMap | null>(null);
   const markersRef = useRef<NaverMarker[]>([]);
 
@@ -127,6 +128,18 @@ export function MapPreview() {
   const selected = visible.find((place) => place.id === selectedId) ?? null;
 
   useEffect(() => {
+    const card = cardRef.current;
+    if (!card) {
+      return;
+    }
+    const navTop = document.querySelector("nav")?.getBoundingClientRect().top ?? window.innerHeight;
+    const overflow = card.getBoundingClientRect().bottom - navTop + 16;
+    if (overflow > 0) {
+      window.scrollBy({ top: overflow, behavior: "smooth" });
+    }
+  }, [cardNote, selectedId]);
+
+  useEffect(() => {
     if (!naverReady || !mapNode.current) {
       return;
     }
@@ -153,7 +166,7 @@ export function MapPreview() {
             return;
           }
           node.style.height = "100%";
-          node.style.minHeight = "480px";
+          node.style.minHeight = "100%";
           naver.maps.Event.trigger(created, "resize");
           if (node.style.backgroundImage.includes("auth_fail")) {
             setMapReady(false);
@@ -250,7 +263,7 @@ export function MapPreview() {
   }
 
   return (
-    <section className="relative mx-auto flex min-h-[calc(100dvh-7.5rem)] w-full max-w-[430px] flex-col overflow-hidden bg-[#fff7fb]">
+    <section className="relative mx-auto w-full max-w-[430px] bg-[#fff7fb] pb-28">
       <header className="rounded-b-[28px] bg-[#ffe3ee] px-4 pb-3 pt-3 shadow-sm">
         <div className="flex items-center gap-3">
           <PixelLogo />
@@ -295,21 +308,21 @@ export function MapPreview() {
           ))}
         </div>
       </header>
-      <div className="relative min-h-[480px] flex-1">
-        {naverReady ? <div ref={mapNode} className="absolute inset-0 h-full min-h-[480px] w-full" /> : (
+      <div className="relative mt-4 h-[clamp(400px,56dvh,480px)] w-full shrink-0">
+        {naverReady ? <div ref={mapNode} className="absolute inset-0 h-full w-full" /> : (
           <div className="absolute inset-0 grid place-items-center bg-[#fff1f6] px-6 text-center text-sm leading-6 text-[#8d6674]">
             <p>{MISSING_KEY}</p>
           </div>
         )}
         {naverReady ? (
-          <div className="absolute bottom-28 right-3 z-10 grid gap-2">
+          <div className="absolute bottom-3 right-3 z-10 grid gap-2">
             <button type="button" aria-label="확대" onClick={() => changeZoom(1)} className="grid h-11 w-11 place-items-center rounded-full bg-white text-lg shadow">+</button>
             <button type="button" aria-label="축소" onClick={() => changeZoom(-1)} className="grid h-11 w-11 place-items-center rounded-full bg-white text-lg shadow">−</button>
             <button type="button" onClick={requestLocation} className="min-h-11 rounded-full bg-white px-3 text-xs shadow">내 위치</button>
           </div>
         ) : null}
         {status ? <p className="absolute left-3 right-3 top-3 z-10 rounded-2xl bg-white/95 px-3 py-2 text-xs leading-5 text-[#8d6674]">{status}</p> : null}
-        <ul className="absolute left-3 right-16 top-14 z-10 flex gap-2 overflow-x-auto">
+        <ul className={`absolute left-3 right-16 z-10 flex gap-2 overflow-x-auto ${status ? "top-16" : "top-3"}`}>
           {visible.filter((place) => place.latitude === null).map((place) => (
             <li key={place.id}>
               <button type="button" onClick={() => focusPlace(place)} className="rounded-full bg-white px-3 py-2 text-xs shadow">
@@ -318,36 +331,46 @@ export function MapPreview() {
             </li>
           ))}
         </ul>
-        {selected ? (
-          <article className="absolute inset-x-3 bottom-24 z-20 rounded-3xl bg-white p-3 shadow-lg">
-            <div className="flex gap-3">
-              <div className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-[#ffe3ee] text-[10px] leading-3 text-[#ff6f93]">
-                샘플
-                <br />
-                사진
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-start justify-between gap-2">
-                  <h2 className="text-base font-bold">{selected.name}</h2>
-                  <button type="button" aria-label="카드 닫기" onClick={() => setSelectedId(null)} className="text-[#b7b0b6]">×</button>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-[#8d6674]">{selected.address}</p>
-                <p className="mt-1 text-xs text-[#ff6f93]">
-                  방문 {selected.visitCount}회 · 성공 {selected.winCount} · 실패 {selected.failCount}
-                  {selected.revenge ? " · 복수 대상" : ""}
-                </p>
-                <p className="text-xs text-[#8d6674]">{selected.spendingLabel}</p>
-                <p className="text-[11px] text-[#b07a38]">샘플 매장입니다. 실제 기록이나 로그인 계정과 연결되지 않습니다.</p>
-              </div>
-            </div>
-            {cardNote ? <p className="mt-3 rounded-2xl bg-[#fff1f6] px-3 py-2 text-xs leading-5 text-[#8d6674]">{cardNote}</p> : null}
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <button type="button" onClick={() => setCardNote("상세 화면은 서버 앱의 기능입니다. 정적 미리보기에서는 이 샘플 카드만 보여 줍니다.")} className="grid min-h-11 place-items-center rounded-full border border-[#ffb3c8] text-sm text-[#ff6f93]">상세보기</button>
-              <button type="button" onClick={() => setCardNote("기록 저장은 지원하지 않습니다. 입력한 내용은 서버로 전송되지 않습니다.")} className="grid min-h-11 place-items-center rounded-full bg-[#ff7ea4] text-sm text-white">이 매장에 기록 추가</button>
-            </div>
-          </article>
-        ) : null}
       </div>
+      {selected ? (
+        <article ref={cardRef} className="mx-3 mt-4 scroll-mb-28 rounded-3xl bg-white p-3 shadow-lg">
+          <div className="flex gap-3">
+            <div className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-[#ffe3ee] text-[10px] leading-3 text-[#ff6f93]">
+              샘플
+              <br />
+              사진
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-start justify-between gap-2">
+                <h2 className="text-base font-bold">{selected.name}</h2>
+                <button
+                  type="button"
+                  aria-label="카드 닫기"
+                  onClick={() => {
+                    setSelectedId(null);
+                    setCardNote(null);
+                  }}
+                  className="text-[#b7b0b6]"
+                >
+                  ×
+                </button>
+              </div>
+              <p className="mt-1 text-xs leading-5 text-[#8d6674]">{selected.address}</p>
+              <p className="mt-1 text-xs text-[#ff6f93]">
+                방문 {selected.visitCount}회 · 성공 {selected.winCount} · 실패 {selected.failCount}
+                {selected.revenge ? " · 복수 대상" : ""}
+              </p>
+              <p className="text-xs text-[#8d6674]">{selected.spendingLabel}</p>
+              <p className="text-[11px] text-[#b07a38]">샘플 매장입니다. 실제 기록이나 로그인 계정과 연결되지 않습니다.</p>
+            </div>
+          </div>
+          {cardNote ? <p className="mt-3 rounded-2xl bg-[#fff1f6] px-3 py-2 text-xs leading-5 text-[#8d6674]">{cardNote}</p> : null}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setCardNote("상세 화면은 서버 앱의 기능입니다. 정적 미리보기에서는 이 샘플 카드만 보여 줍니다.")} className="grid min-h-11 place-items-center rounded-full border border-[#ffb3c8] text-sm text-[#ff6f93]">상세보기</button>
+            <button type="button" onClick={() => setCardNote("기록 저장은 지원하지 않습니다. 입력한 내용은 서버로 전송되지 않습니다.")} className="grid min-h-11 place-items-center rounded-full bg-[#ff7ea4] text-sm text-white">이 매장에 기록 추가</button>
+          </div>
+        </article>
+      ) : null}
     </section>
   );
 }
