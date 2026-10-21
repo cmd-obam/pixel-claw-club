@@ -42,6 +42,54 @@ AS $$
   SELECT public.seoul_month_start(ts) + interval '1 month';
 $$;
 
+REVOKE ALL ON FUNCTION public.seoul_week_start(timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.seoul_week_end(timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.seoul_month_start(timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.seoul_month_end(timestamptz) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.seoul_week_start(timestamptz) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.seoul_week_end(timestamptz) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.seoul_month_start(timestamptz) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.seoul_month_end(timestamptz) TO authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Tables
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE public.profiles (
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  nickname text NOT NULL CHECK (char_length(nickname) BETWEEN 1 AND 20),
+  avatar_path text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.groups (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 40),
+  owner_id uuid NOT NULL REFERENCES auth.users(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX groups_singleton ON public.groups ((true));
+
+CREATE TABLE public.group_members (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  group_id uuid NOT NULL REFERENCES public.groups(id),
+  user_id uuid NOT NULL REFERENCES auth.users(id),
+  status text NOT NULL CHECK (status IN ('INVITED', 'ACTIVE', 'REVOKED')),
+  role text NOT NULL CHECK (role IN ('OWNER', 'MEMBER')),
+  joined_at timestamptz,
+  revoked_at timestamptz,
+  UNIQUE (group_id, user_id)
+);
+
+CREATE UNIQUE INDEX group_members_one_active_owner
+  ON public.group_members (group_id)
+  WHERE role = 'OWNER' AND status = 'ACTIVE';
+
+-- These read group_members, so they are created after that table.
+-- LANGUAGE sql checks referenced tables when the function is created.
 CREATE OR REPLACE FUNCTION public.is_active_member(p_group uuid)
 RETURNS boolean
 LANGUAGE sql
@@ -80,57 +128,12 @@ AS $$
   LIMIT 1;
 $$;
 
-REVOKE ALL ON FUNCTION public.seoul_week_start(timestamptz) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.seoul_week_end(timestamptz) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.seoul_month_start(timestamptz) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.seoul_month_end(timestamptz) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.is_active_member(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.is_group_owner(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.my_group_id() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.seoul_week_start(timestamptz) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.seoul_week_end(timestamptz) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.seoul_month_start(timestamptz) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.seoul_month_end(timestamptz) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.is_active_member(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.is_group_owner(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.my_group_id() TO authenticated;
-
--- ---------------------------------------------------------------------------
--- Tables
--- ---------------------------------------------------------------------------
-
-CREATE TABLE public.profiles (
-  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  nickname text NOT NULL CHECK (char_length(nickname) BETWEEN 1 AND 20),
-  avatar_path text,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE public.groups (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 40),
-  owner_id uuid NOT NULL REFERENCES auth.users(id),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE UNIQUE INDEX groups_singleton ON public.groups ((true));
-
-CREATE TABLE public.group_members (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  group_id uuid NOT NULL REFERENCES public.groups(id),
-  user_id uuid NOT NULL REFERENCES auth.users(id),
-  status text NOT NULL CHECK (status IN ('INVITED', 'ACTIVE', 'REVOKED')),
-  role text NOT NULL CHECK (role IN ('OWNER', 'MEMBER')),
-  joined_at timestamptz,
-  revoked_at timestamptz,
-  UNIQUE (group_id, user_id)
-);
-
-CREATE UNIQUE INDEX group_members_one_active_owner
-  ON public.group_members (group_id)
-  WHERE role = 'OWNER' AND status = 'ACTIVE';
 
 CREATE TABLE public.group_invitations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

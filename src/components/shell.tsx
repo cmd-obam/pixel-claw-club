@@ -26,7 +26,7 @@ export function Shell({ info, children }: { info: ShellInfo; children: React.Rea
           </Link>
         </header>
       )}
-      <main className={mapScreen ? "flex-1" : "flex-1 px-4 pb-28 md:pb-8"}>{children}</main>
+      <main className={mapScreen ? "flex-1" : "flex-1 px-4 pb-28"}>{children}</main>
       <BottomNav />
     </div>
   );

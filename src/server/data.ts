@@ -8,7 +8,7 @@ import type { SavePlayValues, StoreInputValues } from "@/domain/forms";
 import { computeRankings, type RankingPeriod } from "@/domain/rankings";
 import { REVENGE_LABELS } from "@/domain/revenge";
 import { detectImageKind } from "@/domain/image-bytes";
-import { villageLevelForCount, blockedTilesForLevel } from "@/domain/village";
+import { villageLevelForCount, blockedTilesForLevel, isWalkable } from "@/domain/village";
 import { parseIso, seoulLocalInputToUtc } from "@/domain/time";
 import { publicMapConfig, isProductionConfigured, type PublicMapConfig } from "@/server/config";
 import { withDemoState } from "@/server/demo-store";
@@ -93,6 +93,8 @@ export interface MutationResult {
   message: string;
   id?: string;
   token?: string;
+  characterSlot?: number;
+  characterName?: string;
   confirmation?: {
     fingerprint: string;
     spentBefore: number;
@@ -923,7 +925,18 @@ export async function saveSettings(input: {
       return { ok: true, message: "설정을 저장했습니다." };
     }
     const supabase = await createSupabaseServer();
-    const { error: profileError } = await supabase.from("profiles").update({ nickname: input.nickname }).eq("id", actor.id);
+    const nickname = input.nickname.trim();
+    const { data: profiles, error: namesError } = await supabase.from("profiles").select("id, nickname");
+    if (namesError) {
+      throw new AppError("DATABASE", safeDatabaseMessage(namesError.message));
+    }
+    const taken = z.array(z.object({ id: z.string(), nickname: z.string() })).parse(profiles ?? []).some(
+      (profile) => profile.id !== actor.id && profile.nickname.localeCompare(nickname, "ko", { sensitivity: "accent" }) === 0,
+    );
+    if (taken) {
+      return { ok: false, message: "이미 사용 중인 닉네임입니다." };
+    }
+    const { error: profileError } = await supabase.from("profiles").update({ nickname }).eq("id", actor.id);
     if (profileError) {
       throw new AppError("DATABASE", safeDatabaseMessage(profileError.message));
     }
@@ -990,12 +1003,27 @@ export async function loadMemberAdmin() {
   if (inviteError) {
     throw new AppError("DATABASE", safeDatabaseMessage(inviteError.message));
   }
+  const parsedMembers = z
+    .array(z.object({ user_id: z.string(), role: z.enum(["OWNER", "MEMBER"]), status: z.enum(["INVITED", "ACTIVE", "REVOKED"]) }))
+    .parse(members ?? []);
+  const memberIds = parsedMembers.map((item) => item.user_id);
+  const { data: profiles, error: profileError } = memberIds.length
+    ? await supabase.from("profiles").select("id,nickname").in("id", memberIds)
+    : { data: [], error: null };
+  if (profileError) {
+    throw new AppError("DATABASE", safeDatabaseMessage(profileError.message));
+  }
+  const nicknames = new Map(
+    z.array(z.object({ id: z.string(), nickname: z.string() })).parse(profiles ?? []).map((profile) => [profile.id, profile.nickname]),
+  );
   return {
     isOwner: (await loadShell())?.isOwner ?? false,
-    members: z
-      .array(z.object({ user_id: z.string(), role: z.enum(["OWNER", "MEMBER"]), status: z.enum(["INVITED", "ACTIVE", "REVOKED"]) }))
-      .parse(members ?? [])
-      .map((item) => ({ userId: item.user_id, nickname: "멤버", role: item.role, status: item.status })),
+    members: parsedMembers.map((item) => ({
+      userId: item.user_id,
+      nickname: nicknames.get(item.user_id) ?? "멤버",
+      role: item.role,
+      status: item.status,
+    })),
     invitations: z
       .array(z.object({ id: z.string(), expires_at: z.string(), used_at: z.string().nullable(), revoked_at: z.string().nullable() }))
       .parse(invitations ?? [])
@@ -1071,7 +1099,14 @@ export async function revokeGroupMember(userId: string): Promise<MutationResult>
       return { ok: true, message: "멤버를 비활성화했습니다." };
     }
     await callRpc("revoke_member", { p_user_id: userId });
-    return { ok: true, message: "멤버를 비활성화했습니다." };
+    const { releaseCharacterSlot } = await import("@/server/pin-login");
+    const released = await releaseCharacterSlot(userId);
+    return {
+      ok: true,
+      message: released
+        ? "멤버를 비활성화했습니다."
+        : "멤버를 비활성화했습니다. 캐릭터 칸은 서버 인증 설정을 확인한 뒤 다시 내보내 주세요.",
+    };
   } catch (error) {
     return failure(error);
   }
@@ -1098,7 +1133,31 @@ export async function loadStoreDetail(storeId: string) {
         notes: z.string(),
       })
       .parse(data);
-    return { store, records: [] as RecordView[], spendingLabel: "운영 모드에서는 공개된 금액만 별도 API로 계산합니다." };
+    const records = (await productionRecords()).filter((record) => record.storeId === store.id);
+    let permitted = 0;
+    let hidden = 0;
+    for (const record of records) {
+      if (!record.amount.visible || record.amount.amount === null) {
+        hidden += 1;
+        continue;
+      }
+      permitted += record.amount.amount;
+    }
+    const spendingLabel =
+      records.length === 0
+        ? "지출 기록 없음"
+        : hidden === 0
+          ? formatKrw(permitted)
+          : permitted > 0
+            ? `공개된 금액 ${formatKrw(permitted)}`
+            : "금액 비공개";
+    return {
+      store,
+      records,
+      spendingLabel,
+      permittedSpent: permitted,
+      groupTotal: records.length > 0 && hidden === 0 ? permitted : null,
+    };
   }
   return withDemoState((state) => {
     const store = state.stores.find((item) => item.id === storeId && !item.deletedAt);
@@ -1147,11 +1206,32 @@ export async function loadRevengeBoard() {
         }),
       )
       .parse(data ?? []);
+    const storeIds = [...new Set(rows.map((row) => row.store_id))];
+    const memberIds = [...new Set(rows.map((row) => row.assigned_member_id))];
+    const { data: stores, error: storeError } = storeIds.length
+      ? await supabase.from("stores").select("id,name").in("id", storeIds)
+      : { data: [], error: null };
+    if (storeError) {
+      throw new AppError("DATABASE", safeDatabaseMessage(storeError.message));
+    }
+    const { data: profiles, error: profileError } = memberIds.length
+      ? await supabase.from("profiles").select("id,nickname").in("id", memberIds)
+      : { data: [], error: null };
+    if (profileError) {
+      throw new AppError("DATABASE", safeDatabaseMessage(profileError.message));
+    }
+    const storeNames = new Map(
+      z.array(z.object({ id: z.string(), name: z.string() })).parse(stores ?? []).map((store) => [store.id, store.name]),
+    );
+    const nicknames = new Map(
+      z.array(z.object({ id: z.string(), nickname: z.string() })).parse(profiles ?? []).map((profile) => [profile.id, profile.nickname]),
+    );
     return rows.map((row) => ({
       id: row.id,
       storeId: row.store_id,
-      storeName: "매장",
-      assignee: row.assigned_member_id,
+      storeName: storeNames.get(row.store_id) ?? "매장",
+      assignee: nicknames.get(row.assigned_member_id) ?? "멤버",
+      assignedMemberId: row.assigned_member_id,
       status: row.status,
       label: REVENGE_LABELS[row.status],
       reason: row.reason,
@@ -1180,10 +1260,25 @@ export async function loadRevengeBoard() {
 
 export async function rememberPositions(positions: Array<{ prizeId: string; col: number; row: number }>): Promise<void> {
   const actor = await requireActor();
-  if (actor.mode !== "demo") {
+  if (actor.mode === "demo") {
+    await withDemoState((state) => updateCharacterPositions(state, actor.id, positions));
     return;
   }
-  await withDemoState((state) => updateCharacterPositions(state, actor.id, positions));
+  const village = await loadVillage();
+  const blocked = new Set(village.blocked);
+  const supabase = await createSupabaseServer();
+  for (const position of positions.slice(0, 64)) {
+    if (!z.string().uuid().safeParse(position.prizeId).success || !isWalkable(position.col, position.row, blocked)) {
+      continue;
+    }
+    const { error } = await supabase
+      .from("village_characters")
+      .update({ col: position.col, row: position.row })
+      .eq("prize_id", position.prizeId);
+    if (error) {
+      throw new AppError("DATABASE", safeDatabaseMessage(error.message));
+    }
+  }
 }
 
 export async function searchPlaces(query: string): Promise<{ available: boolean; message: string; results: Array<{ name: string; address: string; latitude: number; longitude: number }> }> {
@@ -1438,15 +1533,64 @@ async function productionHome(): Promise<HomeData> {
   const storeRows = z
     .array(z.object({ id: z.string(), name: z.string(), address: z.string(), latitude: z.number().nullable(), longitude: z.number().nullable() }))
     .parse(stores ?? []);
+  const { data: targets, error: targetError } = await supabase
+    .from("revenge_targets")
+    .select("id,store_id,assigned_member_id,status,created_at")
+    .order("created_at", { ascending: false });
+  if (targetError) {
+    throw new AppError("DATABASE", safeDatabaseMessage(targetError.message));
+  }
+  const targetRows = z
+    .array(
+      z.object({
+        id: z.string(),
+        store_id: z.string(),
+        assigned_member_id: z.string(),
+        status: z.enum(["ACTIVE", "COMPLETED", "ABANDONED"]),
+        created_at: z.string(),
+      }),
+    )
+    .parse(targets ?? []);
+  const assigneeIds = [...new Set(targetRows.map((target) => target.assigned_member_id))];
+  const { data: profiles, error: profileError } = assigneeIds.length
+    ? await supabase.from("profiles").select("id,nickname").in("id", assigneeIds)
+    : { data: [], error: null };
+  if (profileError) {
+    throw new AppError("DATABASE", safeDatabaseMessage(profileError.message));
+  }
+  const nicknames = new Map(
+    z.array(z.object({ id: z.string(), nickname: z.string() })).parse(profiles ?? []).map((profile) => [profile.id, profile.nickname]),
+  );
+  const storeNames = new Map(storeRows.map((store) => [store.id, store.name]));
+  const { data: events, error: eventError } = await supabase
+    .from("audit_events")
+    .select("id,action,created_at")
+    .order("created_at", { ascending: false })
+    .limit(6);
+  if (eventError) {
+    throw new AppError("DATABASE", safeDatabaseMessage(eventError.message));
+  }
+  const activity = z
+    .array(z.object({ id: z.string(), action: z.string(), created_at: z.string() }))
+    .parse(events ?? [])
+    .map((event) => ({ id: event.id, text: activityText(event.action) }));
   return {
     shell,
-    stores: storeRows.map((store) => ({ ...store, revenge: false })),
+    stores: storeRows.map((store) => ({
+      ...store,
+      revenge: targetRows.some((target) => target.store_id === store.id && target.status === "ACTIVE"),
+    })),
     budget: budget.week,
     disclosedLabel: "다른 멤버의 금액은 각 공개 설정이 허용할 때만 합산됩니다.",
     rankings,
-    revenge: [],
+    revenge: targetRows.slice(0, 4).map((target) => ({
+      id: target.id,
+      title: storeNames.get(target.store_id) ?? "매장",
+      status: REVENGE_LABELS[target.status],
+      assignee: nicknames.get(target.assigned_member_id) ?? "멤버",
+    })),
     prizes: prizes.slice(0, 4).map((prize) => ({ id: prize.id, name: prize.name, owner: prize.ownerNickname })),
-    activity: [],
+    activity,
     village,
   };
 }

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { z } from "zod";
-import { AppError } from "@/domain/errors";
+import { AppError, isAppError } from "@/domain/errors";
 import { privacySchema, savePlaySchema, storeInputSchema, type SavePlayValues } from "@/domain/forms";
 import { isProductionConfigured } from "@/server/config";
 import { DEMO_COOKIE } from "@/server/demo-accounts";
@@ -29,6 +29,7 @@ import {
   submitStore,
   type MutationResult,
 } from "@/server/data";
+import { changeMyCharacter, changeOwnPassword, enterClub } from "@/server/pin-login";
 import { assertRateLimit } from "@/server/rate-limit";
 
 function invalid(error: z.ZodError): MutationResult {
@@ -59,30 +60,33 @@ export async function signOutAction() {
   redirect("/auth");
 }
 
-export async function passwordAuthAction(formData: FormData): Promise<MutationResult> {
-  if (!isProductionConfigured()) {
-    return { ok: false, message: "Supabase가 설정되지 않아 실제 로그인을 할 수 없습니다." };
-  }
-  const email = String(formData.get("email") ?? "");
-  const password = String(formData.get("password") ?? "");
-  const mode = String(formData.get("mode") ?? "sign-in");
-  if (!z.string().email().safeParse(email).success || password.length < 8) {
-    return { ok: false, message: "이메일과 8자 이상 비밀번호를 입력해 주세요." };
-  }
-  assertRateLimit(`auth:${email}`, 8, 60_000);
-  const supabase = await createSupabaseServer();
-  if (mode === "sign-up") {
-    const { error } = await supabase.auth.signUp({ email, password });
-    if (error) {
-      return { ok: false, message: "가입에 실패했습니다. 이미 있는 이메일이거나 인증 설정을 확인해 주세요." };
+export async function enterClubAction(_prev: MutationResult, formData: FormData): Promise<MutationResult> {
+  try {
+    const mode = formData.get("mode") === "login" ? "login" : "join";
+    const result = await enterClub({
+      mode,
+      nickname: String(formData.get("nickname") ?? ""),
+      password: String(formData.get("password") ?? ""),
+      passwordConfirm: String(formData.get("passwordConfirm") ?? ""),
+    });
+    if (!result.ok || result.characterSlot) {
+      return result;
     }
-    return { ok: true, message: "가입했습니다. 가입만으로 그룹에 들어가지 않습니다. 초대가 필요합니다." };
-  }
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) {
-    return { ok: false, message: "이메일 또는 비밀번호가 올바르지 않습니다." };
+  } catch (error) {
+    if (isAppError(error)) {
+      return { ok: false, message: error.message };
+    }
+    return { ok: false, message: "입장할 수 없습니다. 비밀번호를 확인해 주세요." };
   }
   redirect("/");
+}
+
+export async function changeCharacterAction(_prev: MutationResult, formData: FormData): Promise<MutationResult> {
+  const result = await changeMyCharacter(formData.get("slot"));
+  if (result.ok) {
+    revalidatePath("/settings");
+  }
+  return result;
 }
 
 export async function createStoreAction(values: unknown): Promise<MutationResult> {
@@ -196,6 +200,14 @@ export async function deletePrizeAction(formData: FormData): Promise<void> {
   revalidatePath("/collection");
   revalidatePath("/village");
   redirect("/collection");
+}
+
+export async function changePasswordAction(_prev: MutationResult, formData: FormData): Promise<MutationResult> {
+  return changeOwnPassword(
+    String(formData.get("currentPassword") ?? ""),
+    String(formData.get("nextPassword") ?? ""),
+    String(formData.get("nextPasswordConfirm") ?? ""),
+  );
 }
 
 export async function settingsAction(values: unknown): Promise<MutationResult> {

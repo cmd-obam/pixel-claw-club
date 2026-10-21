@@ -7,7 +7,7 @@
 앱이 읽는 값은 `.env.example`에 있습니다.
 
 - `NEXT_PUBLIC_SUPABASE_URL`과 `NEXT_PUBLIC_SUPABASE_ANON_KEY`가 모두 `https://` URL과 함께 있어야 운영 모드입니다.
-- `SUPABASE_SERVICE_ROLE_KEY`는 앱 코드에서 읽지 않습니다.
+- `SUPABASE_SERVICE_ROLE_KEY`는 서버만 읽습니다. 첫 등록에서 내부 계정을 만들고 로그인 이메일을 찾을 때 사용합니다. 세션은 멤버가 입력한 비밀번호가 맞을 때만 만들어지며, 금액 조회나 기록 저장에는 이 키를 쓰지 않습니다. `NEXT_PUBLIC_` 이름으로 두지 않습니다.
 - `NEXT_PUBLIC_MAP_PROVIDER`는 `naver`, `kakao`, `none` 중 하나입니다.
 - 지도 JavaScript 키와 장소 검색 키는 별개입니다. 검색 키는 `NAVER_SEARCH_CLIENT_ID`, `NAVER_SEARCH_CLIENT_SECRET` 또는 `KAKAO_REST_API_KEY`이며 서버에만 둡니다.
 - `IMAGE_AI_PROVIDER`가 비어 있으면 서버의 로컬 픽셀 변환만 사용합니다. AI 변환은 연결하지 않았습니다.

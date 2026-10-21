@@ -16,8 +16,10 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
       <p className="text-sm text-ink/70">{detail.store.address || "주소 없음"}</p>
       {detail.store.latitude === null ? <p className="text-sm">좌표가 없어 지도에는 표시되지 않습니다.</p> : null}
       <p className="text-sm">{detail.spendingLabel}</p>
-      {"groupTotal" in detail && detail.groupTotal !== null ? <p>공개 합계 {formatKrw(detail.groupTotal)}</p> : null}
-      {"permittedSpent" in detail && detail.groupTotal === null ? (
+      {detail.records.length > 0 && "groupTotal" in detail && detail.groupTotal !== null ? (
+        <p>공개 합계 {formatKrw(detail.groupTotal)}</p>
+      ) : null}
+      {detail.records.length > 0 && "permittedSpent" in detail && detail.groupTotal === null ? (
         <p className="text-sm">내게 공개된 금액만 {formatKrw(detail.permittedSpent)}입니다. 전체를 합산하지 않습니다.</p>
       ) : null}
       <ul className="space-y-2">

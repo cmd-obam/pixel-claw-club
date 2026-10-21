@@ -58,7 +58,7 @@ npm install
 npm run dev
 ```
 
-브라우저에서 http://localhost:3000/auth 를 연다. Supabase 변수가 없으면 멤버 A, 멤버 B, 멤버 C로 입장한다.
+브라우저에서 http://localhost:3000/auth 를 연다. Supabase 변수가 없으면 멤버 A, 멤버 B, 멤버 C로 입장한다. 운영 모드에서는 닉네임과 비밀번호로 가입하면 서버가 남은 캐릭터를 배정한다. 다음 입장에서는 그 닉네임과 비밀번호를 사용한다.
 
 ```bash
 npm test
@@ -73,7 +73,7 @@ npm run build
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY`는 선택 사항이며 앱 코드는 읽지 않는다.
+- `SUPABASE_SERVICE_ROLE_KEY`는 서버 전용이다. 첫 등록의 내부 계정 생성과 로그인 이메일 조회에만 읽고, 비밀번호 없이 세션을 만들거나 금액 조회에는 쓰지 않는다. 브라우저로 보내지 않는다.
 - `NEXT_PUBLIC_MAP_PROVIDER`
 - `NEXT_PUBLIC_NAVER_MAP_CLIENT_ID`
 - `NEXT_PUBLIC_KAKAO_MAP_APP_KEY`
