@@ -43,24 +43,63 @@ const filters: Array<{ id: FilterId; label: string }> = [
 
 let naverLoader: Promise<void> | null = null;
 
+function appendMapScript(clientId: string, parameter: "ncpKeyId" | "ncpClientId"): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.async = true;
+    script.dataset.naverMap = parameter;
+    script.src = `https://oapi.map.naver.com/openapi/v3/maps.js?${parameter}=${encodeURIComponent(clientId)}`;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("naver map script failed"));
+    document.head.appendChild(script);
+  });
+}
+
 function loadNaver(clientId: string, onAuthFailure: () => void): Promise<void> {
   const host = window as NaverWindow;
-  host.navermap_authFailure = onAuthFailure;
   if (host.naver?.maps) {
     return Promise.resolve();
   }
   if (!naverLoader) {
     naverLoader = new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.async = true;
-      script.dataset.naverMap = "configured";
-      script.src = `https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${encodeURIComponent(clientId)}`;
-      script.onload = () => resolve();
-      script.onerror = () => {
-        naverLoader = null;
-        reject(new Error("naver map script failed"));
+      let settled = false;
+      const succeed = () => {
+        if (settled || !host.naver?.maps) {
+          return;
+        }
+        settled = true;
+        resolve();
       };
-      document.head.appendChild(script);
+      const fail = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        naverLoader = null;
+        reject(error);
+      };
+      host.navermap_authFailure = () => {
+        if (settled) {
+          return;
+        }
+        host.navermap_authFailure = () => {
+          onAuthFailure();
+          fail(new Error("naver auth failed"));
+        };
+        appendMapScript(clientId, "ncpClientId").then(() => window.setTimeout(succeed, 300)).catch(fail);
+      };
+      appendMapScript(clientId, "ncpKeyId").then(() => window.setTimeout(succeed, 300)).catch(fail);
+      window.setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        if (host.naver?.maps) {
+          succeed();
+          return;
+        }
+        onAuthFailure();
+        fail(new Error("naver auth failed"));
+      }, 2500);
     });
   }
   return naverLoader;
@@ -151,8 +190,20 @@ export function MapScreen({
         });
         mapRef.current = created;
         window.requestAnimationFrame(() => naver.maps.Event.trigger(created, "resize"));
-        setMapReady(true);
-        setStatus(null);
+        window.setTimeout(() => {
+          if (cancelled) {
+            return;
+          }
+          node.style.height = "100%";
+          node.style.minHeight = "480px";
+          if (node.style.backgroundImage.includes("auth_fail")) {
+            setMapReady(false);
+            setStatus("네이버 지도 인증에 실패했습니다. Dynamic Map 권한과 웹 서비스 URL에 http://localhost:3000 이 포함됐는지 확인해 주세요.");
+            return;
+          }
+          setMapReady(true);
+          setStatus(null);
+        }, 400);
       })
       .catch(() => {
         if (!cancelled) {
@@ -288,7 +339,7 @@ export function MapScreen({
         </div>
       </header>
       <div className="relative min-h-[480px] flex-1">
-        {naverReady ? <div ref={mapNode} className="absolute inset-0" /> : (
+        {naverReady ? <div ref={mapNode} className="absolute inset-0 h-full min-h-[480px] w-full" /> : (
           <div className="absolute inset-0 grid place-items-center bg-[#fff1f6] px-6 text-center text-sm leading-6 text-[#8d6674]">
             <p>
               네이버 지도 키가 없습니다. `NEXT_PUBLIC_MAP_PROVIDER=naver`와 `NEXT_PUBLIC_NAVER_MAP_CLIENT_ID`를 설정해 주세요.
