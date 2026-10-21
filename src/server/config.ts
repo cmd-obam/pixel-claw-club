@@ -17,8 +17,9 @@ export interface PublicMapConfig {
 
 export function publicMapConfig(): PublicMapConfig {
   const provider = process.env.NEXT_PUBLIC_MAP_PROVIDER;
-  if (provider === "naver") {
-    const clientId = process.env.NEXT_PUBLIC_NAVER_MAP_CLIENT_ID ?? "";
+  const naverClientId = process.env.NEXT_PUBLIC_NAVER_MAP_CLIENT_ID?.trim() ?? "";
+  if (provider === "naver" || (provider !== "kakao" && naverClientId.length > 0)) {
+    const clientId = naverClientId;
     const searchReady = Boolean(
       process.env.NAVER_SEARCH_CLIENT_ID && process.env.NAVER_SEARCH_CLIENT_SECRET,
     );

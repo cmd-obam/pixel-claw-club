@@ -449,6 +449,66 @@ export function storeSpending(
   };
 }
 
+export interface MapPlaceView {
+  id: string;
+  name: string;
+  address: string;
+  latitude: number | null;
+  longitude: number | null;
+  revenge: boolean;
+  visited: boolean;
+  visitCount: number;
+  winCount: number;
+  failCount: number;
+  spendingLabel: string;
+}
+
+export function mapPlaceViews(state: ClubState, viewerId: string): MapPlaceView[] {
+  const viewer = requireActiveMember(state, viewerId);
+  return state.stores
+    .filter((store) => store.groupId === viewer.groupId && !store.deletedAt)
+    .map((store) => {
+      const visits = state.visits.filter(
+        (visit) => visit.groupId === viewer.groupId && visit.storeId === store.id && !visit.deletedAt,
+      );
+      const records = state.playRecords.filter(
+        (record) => record.groupId === viewer.groupId && !record.deletedAt && recordStoreId(state, record) === store.id,
+      );
+      const attempts = records.reduce((total, record) => total + record.attemptCount, 0);
+      const wins = records.reduce((total, record) => total + record.winCount, 0);
+      const spending = storeSpending(state, viewerId, store.id);
+      const revenge = state.revengeTargets.some(
+        (target) => target.groupId === viewer.groupId && target.storeId === store.id && target.status === "ACTIVE" && !target.deletedAt,
+      );
+      return {
+        id: store.id,
+        name: store.name,
+        address: store.address,
+        latitude: store.latitude,
+        longitude: store.longitude,
+        revenge,
+        visited: visits.length > 0,
+        visitCount: visits.length,
+        winCount: wins,
+        failCount: Math.max(0, attempts - wins),
+        spendingLabel: spendingLabel(spending, records.length),
+      };
+    });
+}
+
+function spendingLabel(spending: DisclosedTotal, recordCount: number): string {
+  if (recordCount === 0) {
+    return "지출 기록 없음";
+  }
+  if (spending.coverage === "complete" && spending.groupTotal !== null) {
+    return formatKrw(spending.groupTotal);
+  }
+  if (spending.permittedSpent > 0) {
+    return `공개된 금액 ${formatKrw(spending.permittedSpent)}`;
+  }
+  return "금액 비공개";
+}
+
 export function formatMoneyCell(cell: MoneyCell): string {
   return cell.visible && cell.amount !== null ? formatKrw(cell.amount) : "비공개";
 }

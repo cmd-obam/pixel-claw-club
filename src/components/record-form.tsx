@@ -12,10 +12,12 @@ export function RecordForm({
   stores,
   playedAt,
   action,
+  initialStoreId,
 }: {
   stores: Array<{ id: string; name: string }>;
   playedAt: string;
   action: (values: SavePlayValues) => Promise<MutationResult>;
+  initialStoreId?: string;
 }) {
   const router = useRouter();
   const idempotencyKey = useRef(crypto.randomUUID());
@@ -24,7 +26,7 @@ export function RecordForm({
   const form = useForm<SavePlayValues>({
     resolver: zodResolver(savePlaySchema),
     defaultValues: {
-      storeId: stores[0]?.id ?? "",
+      storeId: stores.some((store) => store.id === initialStoreId) ? (initialStoreId ?? "") : (stores[0]?.id ?? ""),
       visitId: null,
       newVisit: true,
       playedAt,

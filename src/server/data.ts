@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { assessBudget } from "@/domain/budget";
 import { AppError, isAppError } from "@/domain/errors";
+import { formatKrw } from "@/domain/money";
 import type { SavePlayValues, StoreInputValues } from "@/domain/forms";
 import { computeRankings, type RankingPeriod } from "@/domain/rankings";
 import { REVENGE_LABELS } from "@/domain/revenge";
@@ -44,11 +45,13 @@ import {
   disclosedWeekly,
   listPrizeViews,
   listRecordViews,
+  mapPlaceViews,
   ownPrivacy,
   personalBudget,
   rankingBoard,
   storeSpending,
   villageView,
+  type MapPlaceView,
   type BudgetDashboard,
   type PrizeView,
   type RecordView,
@@ -216,6 +219,23 @@ export async function loadHome(): Promise<HomeData> {
       village: villageView(state, actor.id, () => now),
     };
   });
+}
+
+export interface MapScreenData {
+  mode: "demo" | "production";
+  map: PublicMapConfig;
+  places: MapPlaceView[];
+}
+
+export async function loadMapScreen(): Promise<MapScreenData> {
+  const actor = await requireActor();
+  if (actor.mode === "demo") {
+    return withDemoState((state) => {
+      requireActiveMember(state, actor.id);
+      return { mode: "demo", map: publicMapConfig(), places: mapPlaceViews(state, actor.id) };
+    });
+  }
+  return { mode: "production", map: publicMapConfig(), places: await productionMapPlaces() };
 }
 
 function activityText(action: string): string {
@@ -1287,6 +1307,116 @@ function parseSavePayload(payload: unknown): MutationResult {
     };
   }
   return { ok: true, message: "저장했습니다.", id: parsed.record_id };
+}
+
+async function productionMapPlaces(): Promise<MapPlaceView[]> {
+  const supabase = await createSupabaseServer();
+  const { data: stores, error } = await supabase.from("stores").select("id,name,address,latitude,longitude,deleted_at");
+  if (error) {
+    throw new AppError("DATABASE", safeDatabaseMessage(error.message));
+  }
+  const { data: visits, error: visitError } = await supabase.from("visits").select("id,store_id,deleted_at");
+  if (visitError) {
+    throw new AppError("DATABASE", safeDatabaseMessage(visitError.message));
+  }
+  const { data: records, error: recordError } = await supabase
+    .from("play_records")
+    .select("id,visit_id,player_id,attempt_count,win_count,deleted_at");
+  if (recordError) {
+    throw new AppError("DATABASE", safeDatabaseMessage(recordError.message));
+  }
+  const { data: targets, error: targetError } = await supabase
+    .from("revenge_targets")
+    .select("store_id,status,deleted_at");
+  if (targetError) {
+    throw new AppError("DATABASE", safeDatabaseMessage(targetError.message));
+  }
+  const storeRows = z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        address: z.string(),
+        latitude: z.number().nullable(),
+        longitude: z.number().nullable(),
+        deleted_at: z.string().nullable(),
+      }),
+    )
+    .parse(stores ?? []);
+  const visitRows = z.array(z.object({ id: z.string(), store_id: z.string(), deleted_at: z.string().nullable() })).parse(visits ?? []);
+  const recordRows = z
+    .array(
+      z.object({
+        id: z.string(),
+        visit_id: z.string(),
+        player_id: z.string(),
+        attempt_count: z.number(),
+        win_count: z.number(),
+        deleted_at: z.string().nullable(),
+      }),
+    )
+    .parse(records ?? []);
+  const targetRows = z
+    .array(z.object({ store_id: z.string(), status: z.string(), deleted_at: z.string().nullable() }))
+    .parse(targets ?? []);
+  const { data: privacyRows, error: privacyError } = await supabase
+    .from("privacy_settings")
+    .select("member_id,show_store_spending");
+  if (privacyError) {
+    throw new AppError("DATABASE", safeDatabaseMessage(privacyError.message));
+  }
+  const privacy = z
+    .array(z.object({ member_id: z.string(), show_store_spending: z.enum(["PRIVATE", "GROUP"]) }))
+    .parse(privacyRows ?? []);
+  const storeSpendingOpen = new Map(privacy.map((row) => [row.member_id, row.show_store_spending === "GROUP"]));
+  const actor = await requireActor();
+  const activeRecords = recordRows.filter((record) => record.deleted_at === null);
+  const visibleIds = activeRecords
+    .filter((record) => record.player_id === actor.id || storeSpendingOpen.get(record.player_id) === true)
+    .map((record) => record.id);
+  const amounts = z
+    .array(z.object({ play_record_id: z.string(), amount_spent: z.number() }))
+    .parse(visibleIds.length === 0 ? [] : await callRpc("visible_record_amounts", { p_ids: visibleIds }));
+  const amountByRecord = new Map(amounts.map((row) => [row.play_record_id, row.amount_spent]));
+  const storeByVisit = new Map(visitRows.map((visit) => [visit.id, visit.store_id]));
+  return storeRows
+    .filter((store) => store.deleted_at === null)
+    .map((store) => {
+      const storeVisits = visitRows.filter((visit) => visit.store_id === store.id && visit.deleted_at === null);
+      const storeRecords = activeRecords.filter((record) => storeByVisit.get(record.visit_id) === store.id);
+      const attempts = storeRecords.reduce((total, record) => total + record.attempt_count, 0);
+      const wins = storeRecords.reduce((total, record) => total + record.win_count, 0);
+      let permitted = 0;
+      let hidden = 0;
+      for (const record of storeRecords) {
+        const amount = amountByRecord.get(record.id);
+        if (amount === undefined) {
+          hidden += 1;
+          continue;
+        }
+        permitted += amount;
+      }
+      return {
+        id: store.id,
+        name: store.name,
+        address: store.address,
+        latitude: store.latitude,
+        longitude: store.longitude,
+        revenge: targetRows.some((target) => target.store_id === store.id && target.status === "ACTIVE" && target.deleted_at === null),
+        visited: storeVisits.length > 0,
+        visitCount: storeVisits.length,
+        winCount: wins,
+        failCount: Math.max(0, attempts - wins),
+        spendingLabel:
+          storeRecords.length === 0
+            ? "지출 기록 없음"
+            : hidden === 0
+              ? formatKrw(permitted)
+              : permitted > 0
+                ? `공개된 금액 ${formatKrw(permitted)}`
+                : "금액 비공개",
+      };
+    });
 }
 
 async function productionHome(): Promise<HomeData> {
