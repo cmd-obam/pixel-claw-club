@@ -3,7 +3,28 @@ import { createServerClient } from "@supabase/ssr";
 import { isProductionConfigured } from "@/server/config";
 import { isDemoUserId, DEMO_COOKIE } from "@/server/demo-accounts";
 
+function registeredMapUrl(request: NextRequest): URL | null {
+  const hostname = request.nextUrl.hostname;
+  if (hostname === "127.0.0.1") {
+    const url = request.nextUrl.clone();
+    url.hostname = "localhost";
+    return url;
+  }
+  if (hostname.startsWith("pixel-claw-club") && hostname.endsWith(".vercel.app") && hostname !== "pixel-claw-club.vercel.app") {
+    const url = request.nextUrl.clone();
+    url.protocol = "https:";
+    url.hostname = "pixel-claw-club.vercel.app";
+    url.port = "";
+    return url;
+  }
+  return null;
+}
+
 export async function proxy(request: NextRequest) {
+  const mapUrl = registeredMapUrl(request);
+  if (mapUrl) {
+    return NextResponse.redirect(mapUrl);
+  }
   const { pathname } = request.nextUrl;
   const isPublic = pathname.startsWith("/auth") || pathname.startsWith("/api/demo");
   if (isProductionConfigured()) {

@@ -43,16 +43,27 @@ const filters: Array<{ id: FilterId; label: string }> = [
 
 let naverLoader: Promise<void> | null = null;
 
-function appendMapScript(clientId: string, parameter: "ncpKeyId" | "ncpClientId"): Promise<void> {
+function appendMapScript(clientId: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.async = true;
-    script.dataset.naverMap = parameter;
-    script.src = `https://oapi.map.naver.com/openapi/v3/maps.js?${parameter}=${encodeURIComponent(clientId)}`;
+    script.dataset.naverMap = "ncpKeyId";
+    script.src = `https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${encodeURIComponent(clientId)}`;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("naver map script failed"));
     document.head.appendChild(script);
   });
+}
+
+function mapAuthMessage(): string {
+  const origin = window.location.origin;
+  if (origin.startsWith("http://127.0.0.1")) {
+    return "네이버 지도는 http://127.0.0.1 을 인증하지 않습니다. http://localhost:3000 으로 열어 주세요.";
+  }
+  if (origin.endsWith(".vercel.app") && origin !== "https://pixel-claw-club.vercel.app") {
+    return "이 Vercel 주소는 지도에 등록되어 있지 않습니다. https://pixel-claw-club.vercel.app 으로 열어 주세요.";
+  }
+  return "네이버 지도 인증에 실패했습니다. Dynamic Map 권한과 현재 주소의 웹 서비스 URL을 확인해 주세요.";
 }
 
 function loadNaver(clientId: string, onAuthFailure: () => void): Promise<void> {
@@ -79,16 +90,10 @@ function loadNaver(clientId: string, onAuthFailure: () => void): Promise<void> {
         reject(error);
       };
       host.navermap_authFailure = () => {
-        if (settled) {
-          return;
-        }
-        host.navermap_authFailure = () => {
-          onAuthFailure();
-          fail(new Error("naver auth failed"));
-        };
-        appendMapScript(clientId, "ncpClientId").then(() => window.setTimeout(succeed, 300)).catch(fail);
+        onAuthFailure();
+        fail(new Error("naver auth failed"));
       };
-      appendMapScript(clientId, "ncpKeyId").then(() => window.setTimeout(succeed, 300)).catch(fail);
+      appendMapScript(clientId).then(() => window.setTimeout(succeed, 300)).catch(fail);
       window.setTimeout(() => {
         if (settled) {
           return;
@@ -170,7 +175,7 @@ export function MapScreen({
     const failAuth = () => {
       if (!cancelled) {
         setMapReady(false);
-        setStatus("네이버 지도 인증에 실패했습니다. Dynamic Map 권한과 웹 서비스 URL에 현재 주소가 포함됐는지 확인해 주세요.");
+        setStatus(mapAuthMessage());
       }
     };
     loadNaver(clientId, failAuth)
@@ -198,7 +203,7 @@ export function MapScreen({
           node.style.minHeight = "480px";
           if (node.style.backgroundImage.includes("auth_fail")) {
             setMapReady(false);
-            setStatus("네이버 지도 인증에 실패했습니다. Dynamic Map 권한과 웹 서비스 URL에 http://localhost:3000 이 포함됐는지 확인해 주세요.");
+            setStatus(mapAuthMessage());
             return;
           }
           setMapReady(true);
