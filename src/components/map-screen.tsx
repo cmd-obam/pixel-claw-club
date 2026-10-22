@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MAP_SEARCH_PAGE_SIZE, textMatchesStoreQuery, type SearchArea } from "@/domain/map-search";
 import { STORE_KIND_COLOR, type StoreKind } from "@/domain/public-stores";
 import { haversineMeters } from "@/domain/stores";
 import type { PublicMapConfig } from "@/server/config";
@@ -139,7 +140,7 @@ export function MapScreen({
 }) {
   const clientId = naverClientId(map);
   const naverReady = clientId.length > 0;
-  const [query, setQuery] = useState("");
+  const [draft, setDraft] = useState("");
   const [filter, setFilter] = useState<FilterId>("all");
   const [kindFilter, setKindFilter] = useState<"all" | StoreKind>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -149,17 +150,23 @@ export function MapScreen({
   const [status, setStatus] = useState<string | null>(naverReady ? null : "네이버 지도 키가 없어 지도를 표시하지 않습니다.");
   const [mapReady, setMapReady] = useState(false);
   const [publicPlaces, setPublicPlaces] = useState<MapPlaceView[]>([]);
+  const [pinned, setPinned] = useState<MapPlaceView | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchMessage, setSearchMessage] = useState<string | null>(null);
+  const [searchStatus, setSearchStatus] = useState<"idle" | "ok" | "empty" | "error">("idle");
+  const [searchPlaces, setSearchPlaces] = useState<MapPlaceView[]>([]);
+  const [nearbyPlaces, setNearbyPlaces] = useState<MapPlaceView[]>([]);
+  const [searchArea, setSearchArea] = useState<SearchArea | null>(null);
+  const [searchOffset, setSearchOffset] = useState(0);
+  const [searchHasMore, setSearchHasMore] = useState(false);
+  const searchRequest = useRef(0);
   const mapNode = useRef<HTMLDivElement>(null);
   const mapRef = useRef<NaverMap | null>(null);
   const markersRef = useRef<NaverMarker[]>([]);
 
   const visible = useMemo(() => {
-    const text = query.trim();
     return places.filter((place) => {
-      const matchesText = text.length === 0 || place.name.includes(text) || place.address.includes(text);
-      if (!matchesText) {
-        return false;
-      }
       if (filter === "visited") {
         return place.visited;
       }
@@ -174,7 +181,7 @@ export function MapScreen({
       }
       return true;
     });
-  }, [filter, location, places, query]);
+  }, [filter, location, places]);
 
   const marked = useMemo(() => {
     const club = visible.filter((place) => place.latitude !== null && place.longitude !== null);
@@ -183,13 +190,21 @@ export function MapScreen({
     }
     const ids = new Set(club.map((place) => place.id));
     const licensed = publicPlaces.filter((place) => !ids.has(place.id) && place.latitude !== null && place.longitude !== null);
-    if (kindFilter !== "all") {
-      return licensed;
+    const shown = kindFilter === "all" ? [...club, ...licensed] : licensed;
+    if (pinned && pinned.latitude !== null && !shown.some((place) => place.id === pinned.id)) {
+      return [...shown, pinned];
     }
-    return [...club, ...licensed];
-  }, [filter, kindFilter, publicPlaces, visible]);
+    return shown;
+  }, [filter, kindFilter, pinned, publicPlaces, visible]);
 
-  const selected = [...places, ...publicPlaces].find((place) => place.id === selectedId && (place.clusterCount ?? 1) === 1) ?? null;
+  const selected =
+    [pinned, ...searchPlaces, ...nearbyPlaces, ...places, ...publicPlaces].find((place) => place && place.id === selectedId && (place.clusterCount ?? 1) === 1) ?? null;
+  const localMatches = useMemo(() => {
+    if (kindFilter !== "all" || draft.replace(/\s+/g, "").length < 2) {
+      return [];
+    }
+    return places.filter((place) => textMatchesStoreQuery(place.name, place.address, draft)).slice(0, MAP_SEARCH_PAGE_SIZE);
+  }, [draft, kindFilter, places]);
 
   useEffect(() => {
     if (!naverReady || !mapNode.current) {
@@ -284,30 +299,29 @@ export function MapScreen({
           setPublicPlaces([]);
           return;
         }
-        const text = query.trim();
         const params = new URLSearchParams();
-        if (text.length >= 2) {
-          params.set("q", text);
-        } else {
-          const bounds = naverMap.getBounds();
-          const southWest = bounds.getSW();
-          const northEast = bounds.getNE();
-          params.set("south", String(southWest.lat()));
-          params.set("west", String(southWest.lng()));
-          params.set("north", String(northEast.lat()));
-          params.set("east", String(northEast.lng()));
-          params.set("zoom", String(naverMap.getZoom()));
-          if (filter === "nearby" && location) {
-            params.set("nearLat", String(location.latitude));
-            params.set("nearLng", String(location.longitude));
-          }
+        const bounds = naverMap.getBounds();
+        const southWest = bounds.getSW();
+        const northEast = bounds.getNE();
+        params.set("south", String(southWest.lat()));
+        params.set("west", String(southWest.lng()));
+        params.set("north", String(northEast.lat()));
+        params.set("east", String(northEast.lng()));
+        params.set("zoom", String(naverMap.getZoom()));
+        if (filter === "nearby" && location) {
+          params.set("nearLat", String(location.latitude));
+          params.set("nearLng", String(location.longitude));
         }
         if (kindFilter !== "all") {
           params.set("kind", kindFilter);
         }
         try {
           const response = await fetch(`/api/map/stores?${params.toString()}`);
-          if (!response.ok || ignore) {
+          if (ignore) {
+            return;
+          }
+          if (!response.ok) {
+            setStatus("이 구역의 매장을 불러오지 못했습니다.");
             return;
           }
           const body = (await response.json()) as { places?: MapPlaceView[] };
@@ -328,7 +342,88 @@ export function MapScreen({
       window.clearTimeout(timer);
       naver.maps.Event.removeListener(listener);
     };
-  }, [filter, kindFilter, location, mapReady, practice, query]);
+  }, [filter, kindFilter, location, mapReady, practice]);
+
+  const searchRef = useRef<(text: string, offset: number, append: boolean) => Promise<void>>(async () => undefined);
+  searchRef.current = async (text: string, offset: number, append: boolean) => {
+    if (text.replace(/\s+/g, "").length < 2) {
+      setSearchPlaces([]);
+      setNearbyPlaces([]);
+      setSearchArea(null);
+      setSearchMessage(null);
+      setSearchStatus("idle");
+      setSearchOpen(false);
+      setSearchHasMore(false);
+      return;
+    }
+    if (practice) {
+      setSearchOpen(true);
+      setSearchStatus("empty");
+      setSearchMessage("연습 모드에는 전국 매장 검색이 없습니다.");
+      return;
+    }
+    const requestId = searchRequest.current + 1;
+    searchRequest.current = requestId;
+    setSearching(true);
+    setSearchOpen(true);
+    try {
+      const params = new URLSearchParams({ q: text, offset: String(offset) });
+      if (kindFilter !== "all") {
+        params.set("kind", kindFilter);
+      }
+      const response = await fetch(`/api/map/search?${params.toString()}`);
+      const body = (await response.json()) as {
+        status?: "ok" | "empty" | "error";
+        message?: string;
+        area?: SearchArea | null;
+        places?: MapPlaceView[];
+        nearby?: MapPlaceView[];
+        hasMore?: boolean;
+      };
+      if (requestId !== searchRequest.current) {
+        return;
+      }
+      if (!response.ok || body.status === "error") {
+        setSearchStatus("error");
+        setSearchMessage(body.message || "검색 중 오류가 났습니다. 잠시 후 다시 시도해 주세요.");
+        if (!append) {
+          setSearchPlaces([]);
+          setNearbyPlaces([]);
+          setSearchArea(null);
+        }
+        return;
+      }
+      const nextPlaces = body.places ?? [];
+      const nextNearby = body.nearby ?? [];
+      setSearchArea(body.area ?? null);
+      setNearbyPlaces(nextNearby);
+      setSearchPlaces((current) => (append ? [...current, ...nextPlaces] : nextPlaces));
+      setSearchHasMore(Boolean(body.hasMore));
+      setSearchOffset(offset);
+      if (!append) {
+        const hasRows = nextPlaces.length > 0 || nextNearby.length > 0 || Boolean(body.area) || localMatches.length > 0;
+        setSearchStatus(hasRows ? "ok" : "empty");
+        setSearchMessage(body.message || (hasRows ? null : "일치하는 매장이 없습니다."));
+      }
+    } catch {
+      if (requestId !== searchRequest.current) {
+        return;
+      }
+      setSearchStatus("error");
+      setSearchMessage("검색 요청이 전달되지 않았습니다.");
+    } finally {
+      if (requestId === searchRequest.current) {
+        setSearching(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      void searchRef.current(draft, 0, false);
+    }, 320);
+    return () => window.clearTimeout(handle);
+  }, [draft, kindFilter]);
 
   useEffect(() => {
     const naverMap = mapRef.current;
@@ -398,16 +493,35 @@ export function MapScreen({
   }
 
   function focusPlace(place: MapPlaceView) {
+    setPinned(place);
     setSelectedId(place.id);
+    setSearchOpen(false);
     const naver = (window as NaverWindow).naver;
-    if (naver && mapRef.current && place.latitude !== null && place.longitude !== null) {
-      mapRef.current.panTo(new naver.maps.LatLng(place.latitude, place.longitude));
+    if (!naver || !mapRef.current || place.latitude === null || place.longitude === null) {
+      setStatus(place.latitude === null ? "이 매장은 좌표가 없어 지도에서 위치를 표시하지 못합니다." : null);
+      return;
     }
+    setStatus(null);
+    mapRef.current.setZoom(16);
+    mapRef.current.setCenter(new naver.maps.LatLng(place.latitude, place.longitude));
+  }
+
+  function focusArea(area: SearchArea) {
+    setPinned(null);
+    setSearchOpen(false);
+    setSelectedId(null);
+    const naver = (window as NaverWindow).naver;
+    if (!naver || !mapRef.current) {
+      return;
+    }
+    mapRef.current.setZoom(area.zoom);
+    mapRef.current.setCenter(new naver.maps.LatLng(area.latitude, area.longitude));
+    setStatus(`${area.label} 주변 매장을 표시합니다.`);
   }
 
   return (
     <section className="relative mx-auto flex h-full min-h-0 w-full max-w-[430px] flex-1 flex-col overflow-hidden bg-[#fff7fb]">
-      <header className="rounded-b-[28px] bg-[#ffe3ee] px-4 pb-3 pt-3 shadow-sm">
+      <header className="relative z-20 rounded-b-[28px] bg-[#ffe3ee] px-4 pb-3 pt-3 shadow-sm">
         <div className="flex items-center gap-3">
           <PixelLogo />
           <div className="min-w-0 flex-1">
@@ -428,23 +542,79 @@ export function MapScreen({
             <Link href="/settings" className="rounded-xl px-3 py-2">설정</Link>
           </div>
         ) : null}
-        <form
-          className="mt-3 flex items-center gap-2 rounded-full bg-white px-3 shadow-sm"
-          onSubmit={(event) => event.preventDefault()}
-        >
-          <SearchIcon />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="매장명 또는 지역 검색"
-            className="min-h-12 flex-1 bg-transparent text-sm outline-none"
-          />
-          {query ? (
-            <button type="button" aria-label="검색어 삭제" onClick={() => setQuery("")} className="grid h-8 w-8 place-items-center rounded-full text-[#b7b0b6]">
-              ×
+        <div className="relative">
+          <form
+            className="mt-3 flex items-center gap-2 rounded-full bg-white px-3 shadow-sm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void searchRef.current(draft, 0, false);
+            }}
+          >
+            <button type="submit" aria-label="검색" className="grid h-10 w-10 place-items-center">
+              <SearchIcon />
             </button>
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onFocus={() => {
+                if (draft.replace(/\s+/g, "").length >= 2) {
+                  setSearchOpen(true);
+                }
+              }}
+              placeholder="매장명 또는 지역 검색"
+              className="min-h-12 flex-1 bg-transparent text-sm outline-none"
+            />
+            {draft ? (
+              <button
+                type="button"
+                aria-label="검색어 삭제"
+                onClick={() => {
+                  searchRequest.current += 1;
+                  setDraft("");
+                  setSearchOpen(false);
+                  setSearchPlaces([]);
+                  setNearbyPlaces([]);
+                  setSearchArea(null);
+                  setSearchMessage(null);
+                  setSearchStatus("idle");
+                }}
+                className="grid h-8 w-8 place-items-center rounded-full text-[#b7b0b6]"
+              >
+                ×
+              </button>
+            ) : null}
+          </form>
+          {searchOpen ? (
+            <div className="absolute inset-x-0 top-full z-30 mt-2 max-h-64 overflow-y-auto rounded-3xl bg-white p-2 shadow-lg">
+              {searching ? <p className="px-3 py-2 text-sm text-[#8d6674]">검색 중...</p> : null}
+              {searchStatus === "error" ? <p className="px-3 py-2 text-sm text-[#ff5f8f]">{searchMessage}</p> : null}
+              {searchArea ? (
+                <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => focusArea(searchArea)} className="block w-full rounded-2xl px-3 py-2 text-left">
+                  <span className="text-sm font-bold text-[#ff6f93]">{searchArea.label}로 이동</span>
+                  <span className="mt-0.5 block text-xs text-[#8d6674]">지역 검색 · 이동한 화면의 매장을 다시 불러옵니다</span>
+                </button>
+              ) : null}
+              {localMatches.length > 0 ? <p className="px-3 pt-2 text-xs text-[#b7b0b6]">내 매장</p> : null}
+              {localMatches.map((place) => (
+                <SearchResult key={`local-${place.id}`} place={place} onChoose={focusPlace} />
+              ))}
+              {nearbyPlaces.length > 0 ? <p className="px-3 pt-2 text-xs text-[#b7b0b6]">이 지역 매장</p> : null}
+              {nearbyPlaces.map((place) => (
+                <SearchResult key={`near-${place.id}`} place={place} onChoose={focusPlace} />
+              ))}
+              {searchPlaces.length > 0 ? <p className="px-3 pt-2 text-xs text-[#b7b0b6]">전국 매장</p> : null}
+              {searchPlaces.map((place) => (
+                <SearchResult key={place.id} place={place} onChoose={focusPlace} />
+              ))}
+              {searchHasMore ? (
+                <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => void searchRef.current(draft, searchOffset + MAP_SEARCH_PAGE_SIZE, true)} className="min-h-10 w-full rounded-full text-sm text-[#ff6f93]">
+                  매장 더 보기
+                </button>
+              ) : null}
+              {searchStatus === "empty" && !searching ? <p className="px-3 py-2 text-sm text-[#8d6674]">{searchMessage || "일치하는 매장이 없습니다."}</p> : null}
+            </div>
           ) : null}
-        </form>
+        </div>
         <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
           {kindFilters.map((item) => (
             <button
@@ -470,7 +640,7 @@ export function MapScreen({
           ))}
         </div>
       </header>
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div className="relative z-0 min-h-0 flex-1 overflow-hidden" onPointerDown={() => setSearchOpen(false)}>
         {naverReady ? <div ref={mapNode} className="absolute inset-0 h-full w-full" /> : (
           <div className="absolute inset-0 grid place-items-center bg-[#fff1f6] px-6 text-center text-sm leading-6 text-[#8d6674]">
             <p>
@@ -582,6 +752,18 @@ function StorePlaceholder() {
       <br />
       없음
     </div>
+  );
+}
+
+function SearchResult({ place, onChoose }: { place: MapPlaceView; onChoose: (place: MapPlaceView) => void }) {
+  const kind = place.storeKind ?? "UNKNOWN";
+  const label = kind === "CLAW" ? "인형뽑기" : kind === "ARCADE" ? "오락실" : "미확인";
+  return (
+    <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => onChoose(place)} className="block w-full rounded-2xl px-3 py-2 text-left">
+      <span className="block truncate text-sm font-bold">{place.name}</span>
+      <span className="mt-0.5 block truncate text-xs text-[#8d6674]">{place.address || "주소 없음"}</span>
+      <span className="text-xs" style={{ color: STORE_KIND_COLOR[kind] }}>{label}</span>
+    </button>
   );
 }
 

@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { AppError } from "@/domain/errors";
 import { haversineMeters } from "@/domain/stores";
+import { buildIlikeOr, looksLikePlaceName, MAP_SEARCH_PAGE_SIZE, resolveSearchArea, textMatchesStoreQuery, type SearchArea } from "@/domain/map-search";
 import { classifyStoreKind, clusterMapPoints, type ClawPresence, type StoreKind } from "@/domain/public-stores";
 import type { MapPlaceView } from "@/server/engine/queries";
+import { geocodePlaceName, naverLocalSearchStatus } from "@/server/place-geocode";
 import { requireActor } from "@/server/session";
 import { createSupabaseAdmin } from "@/server/supabase/admin";
 import { createSupabaseServer, safeDatabaseMessage } from "@/server/supabase/server";
@@ -313,4 +315,180 @@ export async function confirmPublicStore(input: {
     return { ok: false, message: "분류를 저장하지 못했습니다. 매장 분류 항목이 데이터베이스에 준비됐는지 확인해 주세요." };
   }
   return { ok: true };
+}
+
+export interface PublicSearchResult {
+  status: "ok" | "empty" | "error";
+  message: string;
+  area: SearchArea | null;
+  places: MapPlaceView[];
+  nearby: MapPlaceView[];
+  hasMore: boolean;
+}
+
+export async function searchPublicStores(input: {
+  query: string;
+  kind: StoreKind | null;
+  offset: number;
+}): Promise<PublicSearchResult> {
+  await requireActor();
+  const text = input.query.trim().slice(0, 40);
+  const offset = Number.isFinite(input.offset) ? Math.max(0, Math.min(45, Math.floor(input.offset))) : 0;
+  if (queryTooShort(text)) {
+    return { status: "empty", message: "두 글자 이상 입력해 주세요.", area: null, places: [], nearby: [], hasMore: false };
+  }
+  const supabase = await createSupabaseServer();
+  const known = resolveSearchArea(text);
+  const area = known ?? (looksLikePlaceName(text) ? await geocodedArea(text) : null);
+  const [places, nearby] = await Promise.all([
+    searchByName(supabase, text, input.kind, offset, !known),
+    area ? searchNearArea(supabase, area, input.kind) : Promise.resolve([]),
+  ]);
+  const named = places.rows;
+  const around = nearby.filter((place) => !named.some((item) => item.id === place.id));
+  const empty = named.length === 0 && around.length === 0 && !area;
+  let message = "";
+  if (area && around.length === 0) {
+    message = `${area.label} 주변에서 표시할 매장을 찾지 못했습니다.`;
+  } else if (empty && looksLikePlaceName(text) && naverLocalSearchStatus() === "unavailable") {
+    message = "지역 좌표 API를 사용할 수 없어, 저장된 주소와 매장명만 검색했습니다.";
+  } else if (empty) {
+    message = "일치하는 매장이 없습니다.";
+  }
+  return {
+    status: empty ? "empty" : "ok",
+    message,
+    area,
+    places: named,
+    nearby: around,
+    hasMore: places.hasMore,
+  };
+}
+
+function queryTooShort(text: string): boolean {
+  return text.replace(/\s+/g, "").length < 2;
+}
+
+async function geocodedArea(text: string): Promise<SearchArea | null> {
+  const place = await geocodePlaceName(text);
+  if (!place) {
+    return null;
+  }
+  return { label: place.label, latitude: place.latitude, longitude: place.longitude, zoom: 16, radiusMeters: 1200 };
+}
+
+async function searchByName(
+  supabase: Awaited<ReturnType<typeof createSupabaseServer>>,
+  text: string,
+  kind: StoreKind | null,
+  offset: number,
+  includeAddress: boolean,
+): Promise<{ rows: MapPlaceView[]; hasMore: boolean }> {
+  const filter = buildIlikeOr(text, includeAddress ? ["name", "address"] : ["name"]);
+  if (!filter) {
+    return { rows: [], hasMore: false };
+  }
+  const columns = await usableColumns(supabase);
+  let request = supabase.from("public_stores").select(columns).eq("business_status", "영업/정상").or(filter).order("name").limit(80);
+  if (kind && columns.includes("store_kind")) {
+    request = request.eq("store_kind", kind);
+  }
+  const { data, error } = await request;
+  if (error) {
+    throw new AppError("DATABASE", safeDatabaseMessage(error.message));
+  }
+  const matched = z.array(rowSchema).parse(data ?? []).flatMap((row) => {
+    if (!textMatchesStoreQuery(row.name, includeAddress ? row.address : "", text)) {
+      return [];
+    }
+    const view = toMapPlace(row);
+    if (kind && view.storeKind !== kind) {
+      return [];
+    }
+    return [view];
+  });
+  return { rows: matched.slice(offset, offset + MAP_SEARCH_PAGE_SIZE), hasMore: matched.length > offset + MAP_SEARCH_PAGE_SIZE };
+}
+
+async function searchNearArea(
+  supabase: Awaited<ReturnType<typeof createSupabaseServer>>,
+  area: SearchArea,
+  kind: StoreKind | null,
+): Promise<MapPlaceView[]> {
+  const latDelta = area.radiusMeters / 111_000;
+  const lngDelta = area.radiusMeters / (111_000 * Math.cos((area.latitude * Math.PI) / 180));
+  const columns = await usableColumns(supabase);
+  let request = supabase
+    .from("public_stores")
+    .select(columns)
+    .eq("business_status", "영업/정상")
+    .not("latitude", "is", null)
+    .gte("latitude", area.latitude - latDelta)
+    .lte("latitude", area.latitude + latDelta)
+    .gte("longitude", area.longitude - lngDelta)
+    .lte("longitude", area.longitude + lngDelta)
+    .limit(300);
+  if (kind && columns.includes("store_kind")) {
+    request = request.eq("store_kind", kind);
+  }
+  const { data, error } = await request;
+  if (error) {
+    throw new AppError("DATABASE", safeDatabaseMessage(error.message));
+  }
+  return z
+    .array(rowSchema)
+    .parse(data ?? [])
+    .flatMap((row) => {
+      if (row.latitude === null || row.longitude === null) {
+        return [];
+      }
+      if (haversineMeters(area.latitude, area.longitude, row.latitude, row.longitude) > area.radiusMeters) {
+        return [];
+      }
+      const view = toMapPlace(row);
+      if (kind && view.storeKind !== kind) {
+        return [];
+      }
+      return [{ view, distance: haversineMeters(area.latitude, area.longitude, row.latitude, row.longitude) }];
+    })
+    .sort((left, right) => left.distance - right.distance)
+    .slice(0, MAP_SEARCH_PAGE_SIZE)
+    .map((item) => item.view);
+}
+
+let columnChoice: string | null = null;
+
+async function usableColumns(supabase: Awaited<ReturnType<typeof createSupabaseServer>>): Promise<string> {
+  if (columnChoice) {
+    return columnChoice;
+  }
+  const probe = await supabase.from("public_stores").select(KIND_COLUMNS).limit(1);
+  columnChoice = probe.error && /store_kind|claw_presence/.test(probe.error.message) ? BASE_COLUMNS : KIND_COLUMNS;
+  if (probe.error && columnChoice === KIND_COLUMNS) {
+    throw new AppError("DATABASE", safeDatabaseMessage(probe.error.message));
+  }
+  return columnChoice;
+}
+
+function toMapPlace(row: z.infer<typeof rowSchema>): MapPlaceView {
+  const decision = classifyStoreKind(row.name);
+  const storeKind = row.store_kind ?? decision.kind;
+  const clawPresence = row.claw_presence ?? decision.clawPresence;
+  return {
+    id: row.id,
+    name: row.name,
+    address: row.address,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    revenge: false,
+    visited: false,
+    visitCount: 0,
+    winCount: 0,
+    failCount: 0,
+    spendingLabel: kindLabel(storeKind),
+    origin: "public",
+    clusterCount: 1,
+    storeKind,
+    clawPresence,
+  };
 }
