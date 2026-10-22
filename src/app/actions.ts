@@ -29,7 +29,7 @@ import {
   submitStore,
   type MutationResult,
 } from "@/server/data";
-import { adoptPublicStore } from "@/server/public-map";
+import { adoptPublicStore, confirmPublicStore } from "@/server/public-map";
 import { changeMyCharacter, changeOwnPassword, enterClub } from "@/server/pin-login";
 import { assertRateLimit } from "@/server/rate-limit";
 
@@ -134,6 +134,22 @@ export async function restoreRecordAction(recordId: string): Promise<void> {
   }
   revalidatePath("/records");
   revalidatePath("/budget");
+}
+
+export async function confirmPublicStoreAction(formData: FormData): Promise<void> {
+  const id = String(formData.get("publicStoreId") ?? "");
+  const kind = String(formData.get("storeKind") ?? "");
+  const clawPresence = String(formData.get("clawPresence") ?? "");
+  if (kind !== "CLAW" && kind !== "ARCADE" && kind !== "UNKNOWN") {
+    redirect(`/stores/public/${id}?error=2`);
+  }
+  if (clawPresence !== "YES" && clawPresence !== "NO" && clawPresence !== "UNKNOWN") {
+    redirect(`/stores/public/${id}?error=2`);
+  }
+  const result = await confirmPublicStore({ id, kind, clawPresence });
+  revalidatePath("/");
+  revalidatePath(`/stores/public/${id}`);
+  redirect(`/stores/public/${id}?saved=${result.ok ? "1" : "0"}`);
 }
 
 export async function adoptPublicStoreAction(formData: FormData): Promise<void> {

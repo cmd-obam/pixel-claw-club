@@ -12,6 +12,7 @@ const querySchema = z.object({
   east: z.coerce.number().min(-180).max(180).optional(),
   zoom: z.coerce.number().min(1).max(21).optional(),
   q: z.string().optional(),
+  kind: z.enum(["CLAW", "ARCADE", "UNKNOWN"]).optional(),
   nearLat: z.coerce.number().min(-90).max(90).optional(),
   nearLng: z.coerce.number().min(-180).max(180).optional(),
 });
@@ -50,6 +51,7 @@ async function loadMapStores(request: Request) {
     east,
     zoom: parsed.data.zoom ?? 14,
     query,
+    kind: parsed.data.kind ?? null,
     nearLat: parsed.data.nearLat ?? null,
     nearLng: parsed.data.nearLng ?? null,
   });

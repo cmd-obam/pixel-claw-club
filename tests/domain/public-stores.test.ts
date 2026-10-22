@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyStoreKind,
   classifyYouthGameStore,
   clusterMapPoints,
   isKoreanCoordinate,
@@ -12,6 +13,15 @@ describe("youth game store classification", () => {
     expect(classifyYouthGameStore("뽑파민 동묘점")).toBe("related");
     expect(classifyYouthGameStore("캑티 가챠샵 대학로점")).toBe("related");
     expect(classifyYouthGameStore("캐치랜드")).toBe("related");
+  });
+
+  it("separates clear claw shops, clear arcades, and uncertain names", () => {
+    expect(classifyStoreKind("TOP 인형뽑기")).toMatchObject({ kind: "CLAW", clawPresence: "YES", include: true });
+    expect(classifyStoreKind("왕오락실 종각점")).toMatchObject({ kind: "ARCADE", clawPresence: "UNKNOWN" });
+    expect(classifyStoreKind("뽑기 오락실")).toMatchObject({ kind: "ARCADE", clawPresence: "YES" });
+    expect(classifyStoreKind("모모스테이션")).toMatchObject({ kind: "UNKNOWN", confidence: "low" });
+    expect(classifyStoreKind("성인게임장", "청소년이용불가").include).toBe(false);
+    expect(classifyStoreKind("트레블 플스방").kind).not.toBe("ARCADE");
   });
 
   it("keeps arcades and play-station rooms uncertain", () => {

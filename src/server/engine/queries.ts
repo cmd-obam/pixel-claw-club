@@ -463,6 +463,8 @@ export interface MapPlaceView {
   spendingLabel: string;
   origin?: "member" | "public";
   clusterCount?: number;
+  storeKind?: "CLAW" | "ARCADE" | "UNKNOWN";
+  clawPresence?: "YES" | "NO" | "UNKNOWN";
 }
 
 export function mapPlaceViews(state: ClubState, viewerId: string): MapPlaceView[] {

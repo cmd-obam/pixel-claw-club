@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { STORE_KIND_COLOR, type StoreKind } from "@/domain/public-stores";
 import { haversineMeters } from "@/domain/stores";
 import type { PublicMapConfig } from "@/server/config";
 import type { MapPlaceView } from "@/server/engine/queries";
@@ -41,6 +42,13 @@ const filters: Array<{ id: FilterId; label: string }> = [
   { id: "nearby", label: "내 주변" },
   { id: "visited", label: "방문한 곳" },
   { id: "revenge", label: "복수 대상" },
+];
+
+const kindFilters: Array<{ id: "all" | StoreKind; label: string }> = [
+  { id: "all", label: "전체" },
+  { id: "CLAW", label: "🧸 인형뽑기" },
+  { id: "ARCADE", label: "🕹️ 오락실" },
+  { id: "UNKNOWN", label: "❔ 미확인" },
 ];
 
 let naverLoader: Promise<void> | null = null;
@@ -133,6 +141,7 @@ export function MapScreen({
   const naverReady = clientId.length > 0;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterId>("all");
+  const [kindFilter, setKindFilter] = useState<"all" | StoreKind>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [noticeOpen, setNoticeOpen] = useState(false);
@@ -173,8 +182,12 @@ export function MapScreen({
       return club;
     }
     const ids = new Set(club.map((place) => place.id));
-    return [...club, ...publicPlaces.filter((place) => !ids.has(place.id) && place.latitude !== null && place.longitude !== null)];
-  }, [filter, publicPlaces, visible]);
+    const licensed = publicPlaces.filter((place) => !ids.has(place.id) && place.latitude !== null && place.longitude !== null);
+    if (kindFilter !== "all") {
+      return licensed;
+    }
+    return [...club, ...licensed];
+  }, [filter, kindFilter, publicPlaces, visible]);
 
   const selected = [...places, ...publicPlaces].find((place) => place.id === selectedId && (place.clusterCount ?? 1) === 1) ?? null;
 
@@ -289,13 +302,22 @@ export function MapScreen({
             params.set("nearLng", String(location.longitude));
           }
         }
-        const response = await fetch(`/api/map/stores?${params.toString()}`);
-        if (!response.ok || ignore) {
-          return;
+        if (kindFilter !== "all") {
+          params.set("kind", kindFilter);
         }
-        const body = (await response.json()) as { places?: MapPlaceView[] };
-        if (!ignore) {
-          setPublicPlaces(body.places ?? []);
+        try {
+          const response = await fetch(`/api/map/stores?${params.toString()}`);
+          if (!response.ok || ignore) {
+            return;
+          }
+          const body = (await response.json()) as { places?: MapPlaceView[] };
+          if (!ignore) {
+            setPublicPlaces(body.places ?? []);
+          }
+        } catch {
+          if (!ignore) {
+            setStatus("매장 정보를 불러오지 못했습니다. 지도를 잠시 움직인 뒤 다시 시도해 주세요.");
+          }
         }
       }, 280);
     };
@@ -306,7 +328,7 @@ export function MapScreen({
       window.clearTimeout(timer);
       naver.maps.Event.removeListener(listener);
     };
-  }, [filter, location, mapReady, practice, query]);
+  }, [filter, kindFilter, location, mapReady, practice, query]);
 
   useEffect(() => {
     const naverMap = mapRef.current;
@@ -424,6 +446,18 @@ export function MapScreen({
           ) : null}
         </form>
         <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          {kindFilters.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setKindFilter(item.id)}
+              className={`min-h-10 shrink-0 rounded-full px-3 text-sm ${kindFilter === item.id ? "bg-[#ff7ea4] text-white" : "bg-white text-[#8d6674]"}`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
           {filters.map((item) => (
             <button
               key={item.id}
@@ -472,6 +506,11 @@ export function MapScreen({
                   <button type="button" aria-label="카드 닫기" onClick={() => setSelectedId(null)} className="text-[#b7b0b6]">×</button>
                 </div>
                 <p className="mt-1 text-xs leading-5 text-[#8d6674]">{selected.address || "주소 없음"}</p>
+                {selected.origin === "public" ? (
+                  <p className="mt-1 text-xs" style={{ color: STORE_KIND_COLOR[selected.storeKind ?? "UNKNOWN"] }}>
+                    {selected.spendingLabel} · 인형뽑기 기계 {selected.clawPresence === "YES" ? "있음" : selected.clawPresence === "NO" ? "없음" : "미확인"}
+                  </p>
+                ) : null}
                 <p className="mt-1 text-xs text-[#ff6f93]">
                   방문 {selected.visitCount}회 · 성공 {selected.winCount} · 실패 {selected.failCount}
                   {selected.revenge ? " · 복수 대상" : ""}
@@ -504,16 +543,17 @@ function firstCoordinate(places: MapPlaceView[]): { latitude: number; longitude:
 }
 
 function markerHtml(place: MapPlaceView, selectedPlace: boolean): string {
+  const color = STORE_KIND_COLOR[place.storeKind ?? "CLAW"];
   if ((place.clusterCount ?? 1) > 1) {
-    return `<div style="min-width:36px;height:36px;padding:0 8px;border-radius:999px;background:#ff7ea4;color:white;display:grid;place-items:center;font-size:12px;font-weight:700;border:3px solid white;box-shadow:0 4px 0 rgba(44,40,37,.12)">${place.clusterCount}</div>`;
+    return `<div style="min-width:36px;height:36px;padding:0 8px;border-radius:999px;background:${color};color:white;display:grid;place-items:center;font-size:12px;font-weight:700;border:3px solid white;box-shadow:0 4px 0 rgba(44,40,37,.12)">${place.clusterCount}</div>`;
   }
   const scale = selectedPlace ? 1.25 : 1;
-  const kind = place.revenge ? heart() : place.visited ? character() : pin();
+  const kind = place.revenge ? heart() : place.visited ? character() : pin(color);
   return `<div style="transform:scale(${scale});transform-origin:center bottom">${kind}</div>`;
 }
 
-function pin(): string {
-  return `<div style="width:28px;height:28px;border-radius:999px;background:#ff7ea4;border:3px solid white;box-shadow:0 4px 0 rgba(44,40,37,.12)"></div>`;
+function pin(color: string): string {
+  return `<div style="width:28px;height:28px;border-radius:999px;background:${color};border:3px solid white;box-shadow:0 4px 0 rgba(44,40,37,.12)"></div>`;
 }
 
 function heart(): string {
