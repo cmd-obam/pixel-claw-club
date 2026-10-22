@@ -9,7 +9,7 @@ export function Shell({ info, children }: { info: ShellInfo; children: React.Rea
   const pathname = usePathname();
   const mapScreen = pathname === "/" || pathname.startsWith("/map");
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-5xl flex-col">
+    <div className={`mx-auto flex w-full max-w-5xl flex-col ${mapScreen ? "h-dvh overflow-hidden" : "min-h-dvh"}`}>
       {info.mode === "demo" ? (
         <p className="bg-butter px-4 py-2 text-center text-sm text-ink">
           데모 모드입니다. 이 브라우저의 연습 데이터이며, 실제 로그인이나 세 사람의 공유 저장이 아닙니다.
@@ -26,8 +26,8 @@ export function Shell({ info, children }: { info: ShellInfo; children: React.Rea
           </Link>
         </header>
       )}
-      <main className={mapScreen ? "flex-1" : "flex-1 px-4 pb-28"}>{children}</main>
-      <BottomNav />
+      <main className={mapScreen ? "flex min-h-0 flex-1 flex-col" : "flex-1 px-4 pb-28"}>{children}</main>
+      <BottomNav docked={mapScreen} />
     </div>
   );
 }

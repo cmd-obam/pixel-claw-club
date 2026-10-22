@@ -461,6 +461,8 @@ export interface MapPlaceView {
   winCount: number;
   failCount: number;
   spendingLabel: string;
+  origin?: "member" | "public";
+  clusterCount?: number;
 }
 
 export function mapPlaceViews(state: ClubState, viewerId: string): MapPlaceView[] {

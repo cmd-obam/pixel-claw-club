@@ -14,6 +14,7 @@ type NaverMap = {
   panTo: (position: object) => void;
   setZoom: (zoom: number, smooth?: boolean) => void;
   getZoom: () => number;
+  getBounds: () => { getSW: () => { lat: () => number; lng: () => number }; getNE: () => { lat: () => number; lng: () => number } };
 };
 type NaverMarker = { setMap: (map: NaverMap | null) => void };
 type NaverNamespace = {
@@ -23,7 +24,8 @@ type NaverNamespace = {
     Point: new (x: number, y: number) => object;
     Marker: new (options: object) => NaverMarker;
     Event: {
-      addListener: (target: object, event: string, handler: () => void) => void;
+      addListener: (target: object, event: string, handler: () => void) => object;
+      removeListener: (listener: object) => void;
       trigger: (target: object, event: string) => void;
     };
   };
@@ -137,6 +139,7 @@ export function MapScreen({
   const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [status, setStatus] = useState<string | null>(naverReady ? null : "네이버 지도 키가 없어 지도를 표시하지 않습니다.");
   const [mapReady, setMapReady] = useState(false);
+  const [publicPlaces, setPublicPlaces] = useState<MapPlaceView[]>([]);
   const mapNode = useRef<HTMLDivElement>(null);
   const mapRef = useRef<NaverMap | null>(null);
   const markersRef = useRef<NaverMarker[]>([]);
@@ -164,7 +167,16 @@ export function MapScreen({
     });
   }, [filter, location, places, query]);
 
-  const selected = places.find((place) => place.id === selectedId) ?? null;
+  const marked = useMemo(() => {
+    const club = visible.filter((place) => place.latitude !== null && place.longitude !== null);
+    if (filter === "visited" || filter === "revenge") {
+      return club;
+    }
+    const ids = new Set(club.map((place) => place.id));
+    return [...club, ...publicPlaces.filter((place) => !ids.has(place.id) && place.latitude !== null && place.longitude !== null)];
+  }, [filter, publicPlaces, visible]);
+
+  const selected = [...places, ...publicPlaces].find((place) => place.id === selectedId && (place.clusterCount ?? 1) === 1) ?? null;
 
   useEffect(() => {
     if (!naverReady || !mapNode.current) {
@@ -194,13 +206,17 @@ export function MapScreen({
           zoom: 14,
         });
         mapRef.current = created;
-        window.requestAnimationFrame(() => naver.maps.Event.trigger(created, "resize"));
+        const fitMap = () => {
+          node.style.width = "100%";
+          node.style.height = "100%";
+          naver.maps.Event.trigger(created, "resize");
+        };
+        window.requestAnimationFrame(fitMap);
         window.setTimeout(() => {
           if (cancelled) {
             return;
           }
-          node.style.height = "100%";
-          node.style.minHeight = "480px";
+          fitMap();
           if (node.style.backgroundImage.includes("auth_fail")) {
             setMapReady(false);
             setStatus(mapAuthMessage());
@@ -221,6 +237,78 @@ export function MapScreen({
   }, [clientId, naverReady, places]);
 
   useEffect(() => {
+    const node = mapNode.current;
+    if (!node || !mapReady) {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      const naver = (window as NaverWindow).naver;
+      if (naver && mapRef.current) {
+        node.style.width = "100%";
+        node.style.height = "100%";
+        naver.maps.Event.trigger(mapRef.current, "resize");
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [mapReady]);
+
+  useEffect(() => {
+    if (!mapReady || practice) {
+      return;
+    }
+    const naver = (window as NaverWindow).naver;
+    const naverMap = mapRef.current;
+    if (!naver || !naverMap) {
+      return;
+    }
+    let timer = 0;
+    let ignore = false;
+    const load = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        if (filter === "visited" || filter === "revenge") {
+          setPublicPlaces([]);
+          return;
+        }
+        const text = query.trim();
+        const params = new URLSearchParams();
+        if (text.length >= 2) {
+          params.set("q", text);
+        } else {
+          const bounds = naverMap.getBounds();
+          const southWest = bounds.getSW();
+          const northEast = bounds.getNE();
+          params.set("south", String(southWest.lat()));
+          params.set("west", String(southWest.lng()));
+          params.set("north", String(northEast.lat()));
+          params.set("east", String(northEast.lng()));
+          params.set("zoom", String(naverMap.getZoom()));
+          if (filter === "nearby" && location) {
+            params.set("nearLat", String(location.latitude));
+            params.set("nearLng", String(location.longitude));
+          }
+        }
+        const response = await fetch(`/api/map/stores?${params.toString()}`);
+        if (!response.ok || ignore) {
+          return;
+        }
+        const body = (await response.json()) as { places?: MapPlaceView[] };
+        if (!ignore) {
+          setPublicPlaces(body.places ?? []);
+        }
+      }, 280);
+    };
+    load();
+    const listener = naver.maps.Event.addListener(naverMap, "idle", load);
+    return () => {
+      ignore = true;
+      window.clearTimeout(timer);
+      naver.maps.Event.removeListener(listener);
+    };
+  }, [filter, location, mapReady, practice, query]);
+
+  useEffect(() => {
     const naverMap = mapRef.current;
     const naver = (window as NaverWindow).naver;
     if (!mapReady || !naverMap || !naver) {
@@ -229,9 +317,7 @@ export function MapScreen({
     for (const marker of markersRef.current) {
       marker.setMap(null);
     }
-    markersRef.current = visible
-      .filter((place) => place.latitude !== null && place.longitude !== null)
-      .map((place) => {
+    markersRef.current = marked.map((place) => {
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(place.latitude ?? 0, place.longitude ?? 0),
           map: naverMap,
@@ -241,10 +327,17 @@ export function MapScreen({
             anchor: new naver.maps.Point(18, 42),
           },
         });
-        naver.maps.Event.addListener(marker, "click", () => setSelectedId(place.id));
+        naver.maps.Event.addListener(marker, "click", () => {
+          if ((place.clusterCount ?? 1) > 1) {
+            naverMap.setCenter(new naver.maps.LatLng(place.latitude ?? 0, place.longitude ?? 0));
+            naverMap.setZoom(Math.min(naverMap.getZoom() + 2, 18), true);
+            return;
+          }
+          setSelectedId(place.id);
+        });
         return marker;
       });
-  }, [mapReady, selectedId, visible]);
+  }, [mapReady, marked, selectedId]);
 
   function changeZoom(delta: number) {
     const current = mapRef.current;
@@ -291,7 +384,7 @@ export function MapScreen({
   }
 
   return (
-    <section className="relative mx-auto flex min-h-[calc(100dvh-7.5rem)] w-full max-w-[430px] flex-col overflow-hidden bg-[#fff7fb]">
+    <section className="relative mx-auto flex h-full min-h-0 w-full max-w-[430px] flex-1 flex-col overflow-hidden bg-[#fff7fb]">
       <header className="rounded-b-[28px] bg-[#ffe3ee] px-4 pb-3 pt-3 shadow-sm">
         <div className="flex items-center gap-3">
           <PixelLogo />
@@ -343,8 +436,8 @@ export function MapScreen({
           ))}
         </div>
       </header>
-      <div className="relative min-h-[480px] flex-1">
-        {naverReady ? <div ref={mapNode} className="absolute inset-0 h-full min-h-[480px] w-full" /> : (
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        {naverReady ? <div ref={mapNode} className="absolute inset-0 h-full w-full" /> : (
           <div className="absolute inset-0 grid place-items-center bg-[#fff1f6] px-6 text-center text-sm leading-6 text-[#8d6674]">
             <p>
               네이버 지도 키가 없습니다. `NEXT_PUBLIC_MAP_PROVIDER=naver`와 `NEXT_PUBLIC_NAVER_MAP_CLIENT_ID`를 설정해 주세요.
@@ -353,10 +446,10 @@ export function MapScreen({
           </div>
         )}
         {naverReady ? (
-          <div className="absolute bottom-28 right-3 z-10 grid gap-2">
-            <button type="button" aria-label="확대" onClick={() => changeZoom(1)} className="grid h-11 w-11 place-items-center rounded-full bg-white text-lg shadow">+</button>
-            <button type="button" aria-label="축소" onClick={() => changeZoom(-1)} className="grid h-11 w-11 place-items-center rounded-full bg-white text-lg shadow">−</button>
-            <button type="button" onClick={requestLocation} className="min-h-11 rounded-full bg-white px-3 text-xs shadow">내 위치</button>
+          <div className="absolute bottom-16 right-4 z-10 grid justify-items-end gap-1.5">
+            <button type="button" aria-label="확대" onClick={() => changeZoom(1)} className="grid h-10 w-10 place-items-center rounded-full bg-white text-base shadow">+</button>
+            <button type="button" aria-label="축소" onClick={() => changeZoom(-1)} className="grid h-10 w-10 place-items-center rounded-full bg-white text-base shadow">−</button>
+            <button type="button" onClick={requestLocation} className="min-h-10 rounded-full bg-white px-3 text-xs shadow">내 위치</button>
           </div>
         ) : null}
         {naverReady && status ? <p className="absolute left-3 right-3 top-3 z-10 rounded-2xl bg-white/95 px-3 py-2 text-xs leading-5 text-[#8d6674]">{status}</p> : null}
@@ -370,7 +463,7 @@ export function MapScreen({
           ))}
         </ul>
         {selected ? (
-          <article className="absolute inset-x-3 bottom-24 z-20 rounded-3xl bg-white p-3 shadow-lg">
+          <article className="absolute inset-x-3 bottom-3 z-20 rounded-3xl bg-white p-3 shadow-lg">
             <div className="flex gap-3">
               <StorePlaceholder />
               <div className="min-w-0 flex-1">
@@ -388,8 +481,12 @@ export function MapScreen({
               </div>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <Link href={`/stores/${selected.id}`} className="grid min-h-11 place-items-center rounded-full border border-[#ffb3c8] text-sm text-[#ff6f93]">상세보기</Link>
-              <Link href={`/records/new?store=${selected.id}`} className="grid min-h-11 place-items-center rounded-full bg-[#ff7ea4] text-sm text-white">이 매장에 기록 추가</Link>
+              <Link href={selected.origin === "public" ? `/stores/public/${selected.id}` : `/stores/${selected.id}`} className="grid min-h-11 place-items-center rounded-full border border-[#ffb3c8] text-sm text-[#ff6f93]">상세보기</Link>
+              {selected.origin === "public" ? (
+                <Link href={`/stores/public/${selected.id}`} className="grid min-h-11 place-items-center rounded-full bg-[#ff7ea4] text-sm text-white">기록·복수 연결</Link>
+              ) : (
+                <Link href={`/records/new?store=${selected.id}`} className="grid min-h-11 place-items-center rounded-full bg-[#ff7ea4] text-sm text-white">이 매장에 기록 추가</Link>
+              )}
             </div>
           </article>
         ) : null}
@@ -407,6 +504,9 @@ function firstCoordinate(places: MapPlaceView[]): { latitude: number; longitude:
 }
 
 function markerHtml(place: MapPlaceView, selectedPlace: boolean): string {
+  if ((place.clusterCount ?? 1) > 1) {
+    return `<div style="min-width:36px;height:36px;padding:0 8px;border-radius:999px;background:#ff7ea4;color:white;display:grid;place-items:center;font-size:12px;font-weight:700;border:3px solid white;box-shadow:0 4px 0 rgba(44,40,37,.12)">${place.clusterCount}</div>`;
+  }
   const scale = selectedPlace ? 1.25 : 1;
   const kind = place.revenge ? heart() : place.visited ? character() : pin();
   return `<div style="transform:scale(${scale});transform-origin:center bottom">${kind}</div>`;

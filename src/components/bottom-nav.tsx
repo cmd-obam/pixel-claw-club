@@ -11,10 +11,10 @@ const links = [
   { href: "/settings", label: "마이", icon: "me" },
 ] as const;
 
-export function BottomNav() {
+export function BottomNav({ docked = false }: { docked?: boolean }) {
   const pathname = usePathname();
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-[#f3d5e2] bg-white px-2 pb-[env(safe-area-inset-bottom)]">
+    <nav className={`${docked ? "relative shrink-0" : "fixed inset-x-0 bottom-0 z-30"} border-t border-[#f3d5e2] bg-white px-2 pb-[env(safe-area-inset-bottom)]`}>
       <ul className="mx-auto grid max-w-[430px] grid-cols-5">
         {links.map((link) => {
           const active = link.href === "/" ? pathname === "/" || pathname.startsWith("/map") : pathname === link.href || pathname.startsWith(`${link.href}/`);

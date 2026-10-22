@@ -29,6 +29,7 @@ import {
   submitStore,
   type MutationResult,
 } from "@/server/data";
+import { adoptPublicStore } from "@/server/public-map";
 import { changeMyCharacter, changeOwnPassword, enterClub } from "@/server/pin-login";
 import { assertRateLimit } from "@/server/rate-limit";
 
@@ -133,6 +134,21 @@ export async function restoreRecordAction(recordId: string): Promise<void> {
   }
   revalidatePath("/records");
   revalidatePath("/budget");
+}
+
+export async function adoptPublicStoreAction(formData: FormData): Promise<void> {
+  const publicStoreId = String(formData.get("publicStoreId") ?? "");
+  const result = await adoptPublicStore(publicStoreId);
+  if (!result.ok) {
+    redirect(`/stores/public/${publicStoreId}?error=1`);
+  }
+  revalidatePath("/");
+  revalidatePath("/records/new");
+  revalidatePath("/revenge");
+  if (formData.get("next") === "revenge") {
+    redirect("/revenge");
+  }
+  redirect(`/records/new?store=${result.id}`);
 }
 
 export async function createRevengeAction(formData: FormData): Promise<void> {

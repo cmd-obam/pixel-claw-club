@@ -39,6 +39,7 @@ yarn-error.log*
 .env*
 !.env.example
 .demo-data/
+/tmp-public-data/
 
 # vercel
 .vercel
